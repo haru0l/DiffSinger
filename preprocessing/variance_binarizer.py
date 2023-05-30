@@ -38,6 +38,7 @@ VARIANCE_ITEM_ATTRIBUTES = [
 midi_smooth: SinusoidalSmoothingConv1d = None
 energy_smooth: SinusoidalSmoothingConv1d = None
 breathiness_smooth: SinusoidalSmoothingConv1d = None
+voicing_smooth: SinusoidalSmoothingConv1d = None
 
 
 class VarianceBinarizer(BaseBinarizer):
@@ -162,8 +163,10 @@ class VarianceBinarizer(BaseBinarizer):
         if hparams['predict_pitch'] or self.predict_variances:
             processed_input['pitch'] = pitch.cpu().numpy()
 
+        energy: np.ndarray = None
+        breathiness: np.ndarray = None
         # Below: extract energy
-        if hparams['predict_energy']:
+        if hparams['predict_energy'] or hparams['predict_voicing']:
             energy = get_energy_librosa(waveform, length, hparams).astype(np.float32)
 
             global energy_smooth
@@ -171,12 +174,12 @@ class VarianceBinarizer(BaseBinarizer):
                 energy_smooth = SinusoidalSmoothingConv1d(
                     round(hparams['energy_smooth_width'] / self.timestep)
                 ).eval().to(self.device)
-            energy = energy_smooth(torch.from_numpy(energy).to(self.device)[None])[0]
+            energy_smoothed = energy_smooth(torch.from_numpy(energy).to(self.device)[None])[0]
 
-            processed_input['energy'] = energy.cpu().numpy()
+            processed_input['energy'] = energy_smoothed.cpu().numpy()
 
         # Below: extract breathiness
-        if hparams['predict_breathiness']:
+        if hparams['predict_breathiness'] or hparams['predict_voicing']:
             breathiness = get_breathiness_pyworld(waveform, f0 * ~uv, length, hparams).astype(np.float32)
 
             global breathiness_smooth
@@ -184,9 +187,21 @@ class VarianceBinarizer(BaseBinarizer):
                 breathiness_smooth = SinusoidalSmoothingConv1d(
                     round(hparams['breathiness_smooth_width'] / self.timestep)
                 ).eval().to(self.device)
-            breathiness = breathiness_smooth(torch.from_numpy(breathiness).to(self.device)[None])[0]
+            breathiness_smoothed = breathiness_smooth(torch.from_numpy(breathiness).to(self.device)[None])[0]
 
-            processed_input['breathiness'] = breathiness.cpu().numpy()
+            processed_input['breathiness'] = breathiness_smoothed.cpu().numpy()
+
+        if hparams['predict_voicing']:
+            voicing = np.clip(energy - breathiness, a_min=0., a_max=None)  # voicing = energy_dB - breathiness_dB
+
+            global voicing_smooth
+            if voicing_smooth is None:
+                voicing_smooth = SinusoidalSmoothingConv1d(
+                    round(hparams['voicing_smooth_width'] / self.timestep)
+                ).eval().to(self.device)
+            voicing_smoothed = voicing_smooth(torch.from_numpy(voicing).to(self.device)[None])[0]
+
+            processed_input['voicing'] = voicing_smoothed.cpu().numpy()
 
         return processed_input
 

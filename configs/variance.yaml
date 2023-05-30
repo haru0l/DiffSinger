@@ -38,6 +38,7 @@ predict_dur: true
 predict_pitch: true
 predict_energy: false
 predict_breathiness: false
+predict_voicing: false
 
 dur_prediction_args:
   arch: fs2
@@ -67,6 +68,8 @@ energy_smooth_width: 0.12
 breathiness_db_min: -96.0
 breathiness_db_max: -20.0
 breathiness_smooth_width: 0.12
+voicing_db_max: 48.0
+voicing_smooth_width: 0.12
 
 variances_prediction_args:
   repeat_bins: 48
