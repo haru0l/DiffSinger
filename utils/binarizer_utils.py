@@ -23,19 +23,12 @@ def get_mel2ph_torch(lr, durs, length, timestep, device='cpu'):
     return mel2ph
 
 
-def get_pitch_parselmouth(
-        waveform, samplerate, length,
-        *, hop_size, f0_min=65, f0_max=800,
-        speed=1, interp_uv=False
-):
+def get_pitch_parselmouth(wav_data, length, hparams, speed=1, interp_uv=False):
     """
 
-    :param waveform: [T]
-    :param samplerate: sampling rate
+    :param wav_data: [T]
     :param length: Expected number of frames
-    :param hop_size: Frame width, in number of samples
-    :param f0_min: Minimum f0 in Hz
-    :param f0_max: Maximum f0 in Hz
+    :param hparams:
     :param speed: Change the speed
     :param interp_uv: Interpolate unvoiced parts
     :return: f0, uv
@@ -44,7 +37,7 @@ def get_pitch_parselmouth(
     time_step = hop_size / hparams['audio_sample_rate']
     f0_min = hparams['f0_min']
     f0_max = hparams['f0_max']
-
+    
     l_pad = int(np.ceil(1.5 / f0_min * hparams['audio_sample_rate']))
     r_pad = hop_size * ((len(wav_data) - 1) // hop_size + 1) - len(wav_data) + l_pad + 1
     wav_data = np.pad(wav_data, (l_pad, r_pad))
@@ -227,27 +220,23 @@ class DeconstructedWaveform:
         return self.kth_harmonic(0)
 
 
-def get_energy_librosa(waveform, length, *, hop_size, win_size, domain='db'):
+def get_energy_librosa(wav_data, length, hparams):
     """
-    Definition of energy: RMS of the waveform, in dB representation
-    :param waveform: [T]
+
+    :param wav_data: [T]
     :param length: Expected number of frames
-    :param hop_size: Frame width, in number of samples
-    :param win_size: Window size, in number of samples
-    :param domain: db or amplitude
+    :param hparams:
     :return: energy
     """
-    energy = librosa.feature.rms(y=waveform, frame_length=win_size, hop_length=hop_size)[0]
+    hop_size = hparams['hop_size']
+    win_size = hparams['win_size']
+
+    energy = librosa.feature.rms(y=wav_data, frame_length=win_size, hop_length=hop_size)[0]
     if len(energy) < length:
         energy = np.pad(energy, (0, length - len(energy)))
     energy = energy[: length]
-    if domain == 'db':
-        energy = librosa.amplitude_to_db(energy)
-    elif domain == 'amplitude':
-        pass
-    else:
-        raise ValueError(f'Invalid domain: {domain}')
-    return energy
+    energy_db = librosa.amplitude_to_db(energy)
+    return energy_db
 
 
 def get_breathiness_pyworld(wav_data, f0, length, hparams):
