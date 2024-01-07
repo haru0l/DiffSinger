@@ -40,18 +40,19 @@ def get_pitch_parselmouth(
     :param interp_uv: Interpolate unvoiced parts
     :return: f0, uv
     """
-    hop_size = int(np.round(hop_size * speed))
-    time_step = hop_size / samplerate
+    hop_size = int(np.round(hparams['hop_size'] * speed))
+    time_step = hop_size / hparams['audio_sample_rate']
+    f0_min = hparams['f0_min']
+    f0_max = hparams['f0_max']
 
-    l_pad = int(np.ceil(1.5 / f0_min * samplerate))
-    r_pad = hop_size * ((len(waveform) - 1) // hop_size + 1) - len(waveform) + l_pad + 1
-    waveform = np.pad(waveform, (l_pad, r_pad))
+    l_pad = int(np.ceil(1.5 / f0_min * hparams['audio_sample_rate']))
+    r_pad = hop_size * ((len(wav_data) - 1) // hop_size + 1) - len(wav_data) + l_pad + 1
+    wav_data = np.pad(wav_data, (l_pad, r_pad))
 
     # noinspection PyArgumentList
-    s = parselmouth.Sound(waveform, sampling_frequency=samplerate).to_pitch_ac(
+    s = parselmouth.Sound(wav_data, sampling_frequency=hparams['audio_sample_rate']).to_pitch_ac(
         time_step=time_step, voicing_threshold=0.6,
-        pitch_floor=f0_min, pitch_ceiling=f0_max
-    )
+        pitch_floor=f0_min, pitch_ceiling=f0_max)
     assert np.abs(s.t1 - 1.5 / f0_min) < 0.001
     f0 = s.selected_array['frequency'].astype(np.float32)
     if len(f0) < length:
@@ -61,7 +62,6 @@ def get_pitch_parselmouth(
     if interp_uv:
         f0, uv = interp_f0(f0, uv)
     return f0, uv
-
 
 class DeconstructedWaveform:
     def __init__(
@@ -250,32 +250,41 @@ def get_energy_librosa(waveform, length, *, hop_size, win_size, domain='db'):
     return energy
 
 
-def get_breathiness_pyworld(
-        waveform: Union[np.ndarray, DeconstructedWaveform],
-        samplerate, f0, length,
-        *, hop_size=None, fft_size=None, win_size=None
-):
+def get_breathiness_pyworld(wav_data, f0, length, hparams):
     """
-    Definition of breathiness: RMS of the aperiodic part, in dB representation
-    :param waveform: All other analysis parameters will not take effect if a DeconstructedWaveform is given
-    :param samplerate: sampling rate
+
+    :param wav_data: [T]
     :param f0: reference f0
     :param length: Expected number of frames
-    :param hop_size: Frame width, in number of samples
-    :param fft_size: Number of fft bins
-    :param win_size: Window size, in number of samples
+    :param hparams:
     :return: breathiness
     """
-    if not isinstance(waveform, DeconstructedWaveform):
-        waveform = DeconstructedWaveform(
-            waveform=waveform, samplerate=samplerate, f0=f0,
-            hop_size=hop_size, fft_size=fft_size, win_size=win_size
-        )
-    waveform_ap = waveform.aperiodic()
-    breathiness = get_energy_librosa(
-        waveform_ap, length=length,
-        hop_size=waveform.hop_size, win_size=waveform.win_size
-    )
+    sample_rate = hparams['audio_sample_rate']
+    hop_size = hparams['hop_size']
+    fft_size = hparams['fft_size']
+
+    # Add a tiny noise to the signal to avoid NaN results of D4C in rare edge cases
+    # References:
+    #   - https://github.com/JeremyCCHsu/Python-Wrapper-for-World-Vocoder/issues/50
+    #   - https://github.com/mmorise/World/issues/116
+    x = wav_data.astype(np.double) + np.random.randn(*wav_data.shape) * 1e-5
+    f0 = f0.astype(np.double)
+    wav_frames = (x.shape[0] + hop_size - 1) // hop_size
+    f0_frames = f0.shape[0]
+    if f0_frames < wav_frames:
+        f0 = np.pad(f0, (0, wav_frames - f0_frames), mode='constant', constant_values=(f0[0], f0[-1]))
+    elif f0_frames > wav_frames:
+        f0 = f0[:wav_frames]
+
+    time_step = hop_size / sample_rate
+    t = np.arange(0, wav_frames) * time_step
+    sp = pw.cheaptrick(x, f0, t, sample_rate, fft_size=fft_size)  # extract smoothed spectrogram
+    ap = pw.d4c(x, f0, t, sample_rate, fft_size=fft_size)  # extract aperiodicity
+    y = pw.synthesize(
+        f0, np.clip(sp * ap * ap, a_min=1e-16, a_max=None), np.ones_like(ap), sample_rate,
+        frame_period=time_step * 1000
+    ).astype(np.float32)  # synthesize the aperiodic part using the parameters
+    breathiness = get_energy_librosa(y, length, hparams)
     return breathiness
 
 
