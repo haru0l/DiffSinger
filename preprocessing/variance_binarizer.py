@@ -14,7 +14,6 @@ from basics.base_pe import BasePE
 from modules.fastspeech.tts_modules import LengthRegulator
 from modules.pe import initialize_pe
 from utils.binarizer_utils import (
-    DeconstructedWaveform,
     SinusoidalSmoothingConv1d,
     get_mel2ph_torch,
     get_energy_librosa,
@@ -361,10 +360,7 @@ class VarianceBinarizer(BaseBinarizer):
                         align_length=length
                     )
             if energy is None:
-                energy = get_energy_librosa(
-                    waveform, length,
-                    hop_size=hparams['hop_size'], win_size=hparams['win_size']
-                ).astype(np.float32)
+                energy = get_energy_librosa(waveform, length, hparams).astype(np.float32)
                 energy_from_wav = True
 
             if energy_from_wav:
@@ -376,12 +372,6 @@ class VarianceBinarizer(BaseBinarizer):
                 energy = energy_smooth(torch.from_numpy(energy).to(self.device)[None])[0].cpu().numpy()
 
             processed_input['energy'] = energy
-
-        # create a DeconstructedWaveform object for further feature extraction
-        dec_waveform = DeconstructedWaveform(
-            waveform, samplerate=hparams['audio_sample_rate'], f0=f0 * ~uv,
-            hop_size=hparams['hop_size'], fft_size=hparams['fft_size'], win_size=hparams['win_size']
-        ) if waveform is not None else None
 
         # Below: extract breathiness
         if hparams['predict_breathiness']:
@@ -399,9 +389,7 @@ class VarianceBinarizer(BaseBinarizer):
                         align_length=length
                     )
             if breathiness is None:
-                breathiness = get_breathiness_pyworld(
-                    dec_waveform, None, None, length=length
-                )
+                breathiness = get_breathiness_pyworld(waveform, f0 * ~uv, length, hparams).astype(np.float32)
                 breathiness_from_wav = True
 
             if breathiness_from_wav:
@@ -413,6 +401,8 @@ class VarianceBinarizer(BaseBinarizer):
                 breathiness = breathiness_smooth(torch.from_numpy(breathiness).to(self.device)[None])[0].cpu().numpy()
 
             processed_input['breathiness'] = breathiness
+
+        return processed_input
 
         # Below: extract tension
         if hparams['predict_tension']:
@@ -430,9 +420,7 @@ class VarianceBinarizer(BaseBinarizer):
                         align_length=length
                     )
             if tension is None:
-                tension = get_tension_base_harmonic_logit(
-                    dec_waveform, None, None, length=length
-                )
+                tension = get_tension_base_harmonic_logit(waveform, None, None, length=length)
                 tension_from_wav = True
 
             if tension_from_wav:
