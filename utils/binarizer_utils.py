@@ -56,6 +56,7 @@ def get_pitch_parselmouth(wav_data, length, hparams, speed=1, interp_uv=False):
         f0, uv = interp_f0(f0, uv)
     return f0, uv
 
+
 class DeconstructedWaveform:
     def __init__(
             self, waveform, samplerate, f0,  # basic parameters
@@ -220,23 +221,27 @@ class DeconstructedWaveform:
         return self.kth_harmonic(0)
 
 
-def get_energy_librosa(wav_data, length, hparams):
+def get_energy_librosa(waveform, length, *, hop_size, win_size, domain='db'):
     """
-
-    :param wav_data: [T]
+    Definition of energy: RMS of the waveform, in dB representation
+    :param waveform: [T]
     :param length: Expected number of frames
-    :param hparams:
+    :param hop_size: Frame width, in number of samples
+    :param win_size: Window size, in number of samples
+    :param domain: db or amplitude
     :return: energy
     """
-    hop_size = hparams['hop_size']
-    win_size = hparams['win_size']
-
-    energy = librosa.feature.rms(y=wav_data, frame_length=win_size, hop_length=hop_size)[0]
+    energy = librosa.feature.rms(y=waveform, frame_length=win_size, hop_length=hop_size)[0]
     if len(energy) < length:
         energy = np.pad(energy, (0, length - len(energy)))
     energy = energy[: length]
-    energy_db = librosa.amplitude_to_db(energy)
-    return energy_db
+    if domain == 'db':
+        energy = librosa.amplitude_to_db(energy)
+    elif domain == 'amplitude':
+        pass
+    else:
+        raise ValueError(f'Invalid domain: {domain}')
+    return energy
 
 
 def get_breathiness_pyworld(wav_data, f0, length, hparams):
@@ -273,7 +278,12 @@ def get_breathiness_pyworld(wav_data, f0, length, hparams):
         f0, np.clip(sp * ap * ap, a_min=1e-16, a_max=None), np.ones_like(ap), sample_rate,
         frame_period=time_step * 1000
     ).astype(np.float32)  # synthesize the aperiodic part using the parameters
-    breathiness = get_energy_librosa(y, length, hparams)
+    
+   
+    breathiness = get_energy_librosa(
+        y, length=length,
+        hop_size=hop_size, win_size=hparams['win_size']
+    )
     return breathiness
 
 
