@@ -21,10 +21,13 @@ from modules.fastspeech.tts_modules import LengthRegulator
 from modules.pe import initialize_pe
 from modules.vocoders.registry import VOCODERS
 from utils.binarizer_utils import (
+    DeconstructedWaveform,
     SinusoidalSmoothingConv1d,
     get_mel2ph_torch,
     get_energy_librosa,
-    get_breathiness_pyworld
+    get_breathiness_pyworld,
+    get_tension_base_harmonic_logit,
+    get_tension_multi_harmonics_logit,
 )
 from utils.hparams import hparams
 
@@ -37,21 +40,24 @@ ACOUSTIC_ITEM_ATTRIBUTES = [
     'f0',
     'energy',
     'breathiness',
+    'tension',
     'key_shift',
-    'speed'
+    'speed',
 ]
 
 pitch_extractor: BasePE = None
 energy_smooth: SinusoidalSmoothingConv1d = None
 breathiness_smooth: SinusoidalSmoothingConv1d = None
+tension_smooth: SinusoidalSmoothingConv1d = None
 
 
 class AcousticBinarizer(BaseBinarizer):
     def __init__(self):
         super().__init__(data_attrs=ACOUSTIC_ITEM_ATTRIBUTES)
         self.lr = LengthRegulator()
-        self.need_energy = hparams.get('use_energy_embed', False)
-        self.need_breathiness = hparams.get('use_breathiness_embed', False)
+        self.need_energy = hparams['use_energy_embed']
+        self.need_breathiness = hparams['use_breathiness_embed']
+        self.need_tension = hparams['use_tension_embed']
 
     def load_meta_data(self, raw_data_dir: pathlib.Path, ds_id, spk_id):
         meta_data_dict = {}
@@ -117,7 +123,9 @@ class AcousticBinarizer(BaseBinarizer):
 
         if self.need_energy:
             # get ground truth energy
-            energy = get_energy_librosa(wav, length, hparams).astype(np.float32)
+            energy = get_energy_librosa(
+                wav, length, hop_size=hparams['hop_size'], win_size=hparams['win_size']
+            ).astype(np.float32)
 
             global energy_smooth
             if energy_smooth is None:
@@ -128,9 +136,17 @@ class AcousticBinarizer(BaseBinarizer):
 
             processed_input['energy'] = energy.cpu().numpy()
 
+        # create a DeconstructedWaveform object for further feature extraction
+        dec_waveform = DeconstructedWaveform(
+            wav, samplerate=hparams['audio_sample_rate'], f0=gt_f0 * ~uv,
+            hop_size=hparams['hop_size'], fft_size=hparams['fft_size'], win_size=hparams['win_size']
+        )
+
         if self.need_breathiness:
             # get ground truth breathiness
-            breathiness = get_breathiness_pyworld(wav, gt_f0 * ~uv, length, hparams).astype(np.float32)
+            breathiness = get_breathiness_pyworld(
+                dec_waveform, None, None, length=length
+            )
 
             global breathiness_smooth
             if breathiness_smooth is None:
@@ -140,6 +156,25 @@ class AcousticBinarizer(BaseBinarizer):
             breathiness = breathiness_smooth(torch.from_numpy(breathiness).to(self.device)[None])[0]
 
             processed_input['breathiness'] = breathiness.cpu().numpy()
+
+        if self.need_tension:
+            # get ground truth tension or falsetto
+            tension = get_tension_base_harmonic_logit(
+                dec_waveform, None, None, length=length
+            )
+
+            global tension_smooth
+            if tension_smooth is None:
+                tension_smooth = SinusoidalSmoothingConv1d(
+                    round(hparams['tension_smooth_width'] / self.timestep)
+                ).eval().to(self.device)
+            tension = tension_smooth(torch.from_numpy(tension).to(self.device)[None])[0]
+            if tension.isnan().any():
+                print('Error:', item_name)
+                print(tension)
+                return None
+
+            processed_input['tension'] = tension.cpu().numpy()
 
         if hparams.get('use_key_shift_embed', False):
             processed_input['key_shift'] = 0.
